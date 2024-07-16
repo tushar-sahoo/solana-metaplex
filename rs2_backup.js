@@ -1,7 +1,6 @@
 const {
     PoolFetchType,
     Raydium,
-    fetchMultipleInfo,
     AMM_V4,
     AMM_STABLE,
     CLMM_PROGRAM_ID,
@@ -22,8 +21,8 @@ const {
 } = require("@solana/web3.js");
 const {
     getAssociatedTokenAddressSync,
-    getOrCreateAssociatedTokenAccount,
     createAssociatedTokenAccountInstruction,
+    createCloseAccountInstruction,
 } = require("@solana/spl-token");
 
 const connection = new Connection(
@@ -32,14 +31,14 @@ const connection = new Connection(
     "finalized"
 );
 
-const Arry1 = JSON.parse(
-    require("fs").readFileSync(
-        "/Users/tusharsahoo/Documents/GitHub/mmorbitt_yudiz/uploads/BC7fMUSWTyRqrMqZL3gVGYj8Y5myPQUBkmJEo5u83tv9.json",
-        "utf8"
-    )
-);
-let secretKey1 = Uint8Array.from(Arry1);
-const owner = Keypair.fromSecretKey(secretKey1);
+// const Arry1 = JSON.parse(
+//     require("fs").readFileSync(
+//         "/Users/tusharsahoo/Documents/GitHub/mmorbitt_yudiz/uploads/BC7fMUSWTyRqrMqZL3gVGYj8Y5myPQUBkmJEo5u83tv9.json",
+//         "utf8"
+//     )
+// );
+// let secretKey1 = Uint8Array.from(Arry1);
+// const payer = Keypair.fromSecretKey(secretKey1);
 
 const Arry2 = JSON.parse(
     require("fs").readFileSync(
@@ -48,26 +47,31 @@ const Arry2 = JSON.parse(
     )
 );
 let secretKey2 = Uint8Array.from(Arry2);
-const payer = Keypair.fromSecretKey(secretKey2);
+const owner = Keypair.fromSecretKey(secretKey2);
 
 async function main() {
     try {
+        let bIsTokenSwap = true;
         const tokenToSend = "So11111111111111111111111111111111111111112"; // e.g. SOLANA mint address
         // const tokenToGet = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; //
         // const tokenToGet = "BGyjasmSzYM9hHiZ1LBU4EJ7KCtRjMSpbN4zTru3W5vf"; // ORBT token
         // const tokenToGet = "976AfpLCtaDqMZNoFJQHLSCVoSBSZHSW2Ra7YWvSyznM"; //
-        const tokenToGet = "3AxsZRdyYyiTdMBzjGFGxFZZsxf4Sk5kkug79t2PwooV"; // CPMM token
-        bIsTokenSwap = true;
+        const tokenToGet = "HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL"; // CPMM token
+        let inputToken = tokenToSend;
 
         const ata = getAssociatedTokenAddressSync(
             new PublicKey(tokenToGet),
             owner.publicKey
         );
+        console.log(ata);
 
-        const tokenBalance = await connection.getTokenAccountBalance(ata);
-
-        // const amountToSend = 0.01 * LAMPORTS_PER_SOL; // 0.01 SOL
-        const amountToSend = tokenBalance.value.amount;
+        let amountToSend = 0.01 * LAMPORTS_PER_SOL; // 0.01 SOL
+        if (bIsTokenSwap) {
+            const tokenBalance = await connection.getTokenAccountBalance(ata);
+            console.log(tokenBalance);
+            amountToSend = tokenBalance.value.amount;
+            inputToken = tokenToGet;
+        }
 
         const raydium = await initRaydium();
 
@@ -90,51 +94,47 @@ async function main() {
         if (isValidAmm(poolInfo.programId)) {
             console.log("AMM Pool");
             const poolKeys = await raydium.liquidity.getAmmPoolKeys(poolId);
-            // console.log(poolKeys);
+            const rpcData = await raydium.liquidity.getRpcPoolInfo(poolId);
 
-            const res = await fetchMultipleInfo({
-                connection: raydium.connection,
-                poolKeysList: [poolKeys],
-                config: undefined,
-            });
-            const pool = res[0];
+            const [baseReserve, quoteReserve, status] = [
+                rpcData.baseReserve,
+                rpcData.quoteReserve,
+                rpcData.status.toNumber(),
+            ];
 
-            const mintIn =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? poolInfo.mintB.address
-                    : poolInfo.mintA.address;
-
-            const mintOut =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? poolInfo.mintA.address
-                    : poolInfo.mintB.address;
+            const baseIn = inputToken === poolInfo.mintA.address.toString();
+            const [mintIn, mintOut] = baseIn
+                ? [poolInfo.mintA, poolInfo.mintB]
+                : [poolInfo.mintB, poolInfo.mintA];
 
             const out = raydium.liquidity.computeAmountOut({
                 poolInfo: {
                     ...poolInfo,
-                    baseReserve: pool.baseReserve,
-                    quoteReserve: pool.quoteReserve,
+                    baseReserve,
+                    quoteReserve,
+                    status,
+                    version: 4,
                 },
                 amountIn: new BN(amountToSend),
-                mintIn: mintIn, // swap mintB -> mintA, use: poolInfo.mintB.address
-                mintOut: mintOut, // swap mintB -> mintA, use: poolInfo.mintA.address
+                mintIn: mintIn.address,
+                mintOut: mintOut.address,
                 slippage: 0.005, // range: 1 ~ 0.0001, means 100% ~ 0.01%
             });
 
             const swap = await raydium.liquidity.swap({
                 poolInfo,
+                poolKeys,
                 amountIn: new BN(amountToSend),
                 amountOut: out.minAmountOut, // out.amountOut means amount 'without' slippage
                 fixedSide: "in",
-                inputMint: mintIn, // swap mintB -> mintA, use: poolInfo.mintB.address
-                associatedOnly: false,
+                inputMint: mintIn.address, // swap mintB -> mintA, use: poolInfo.mintB.address
                 txVersion: TxVersion.LEGACY,
+                config: { associatedOnly: false },
                 computeBudgetConfig: {
                     units: 200000,
                     microLamports: 250000,
                 },
             });
-            console.log(swap.transaction);
 
             const blockHash = await connection.getLatestBlockhash("finalized");
             const tx = swap.transaction;
@@ -207,152 +207,109 @@ async function main() {
 
             const rpcData = await raydium.cpmm.getRpcPoolInfo(poolInfo.id, true);
 
-            console.log(rpcData);
-
-            const rpcPoolKeys = await raydium.cpmm.getCpmmPoolKeys(poolInfo.id);
-
-            console.log(rpcPoolKeys);
+            const poolKeys = await raydium.cpmm.getCpmmPoolKeys(poolInfo.id);
 
             const inputAmount = new BN(amountToSend);
 
-            const reserveA =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? rpcData.quoteReserve
-                    : rpcData.baseReserve;
-
-            const reserveB =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? rpcData.baseReserve
-                    : rpcData.quoteReserve;
-
-            const baseIn =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? false
-                    : true;
+            const baseIn = inputToken === poolInfo.mintA.address.toString();
 
             const swapResult = CurveCalculator.swap(
                 inputAmount,
-                reserveA,
-                reserveB,
+                baseIn ? rpcData.baseReserve : rpcData.quoteReserve,
+                baseIn ? rpcData.quoteReserve : rpcData.baseReserve,
                 rpcData.configInfo.tradeFeeRate
             );
 
-            const clmmPoolInfo = { ...poolInfo };
+            let swap = null;
 
-            if (!baseIn) {
-                clmmPoolInfo.mintA = poolInfo.mintB;
-                clmmPoolInfo.mintB = poolInfo.mintA;
-                clmmPoolInfo.mintAmountA = poolInfo.mintAmountB;
-                clmmPoolInfo.mintAmountB = poolInfo.mintAmountA;
+            if (bIsTokenSwap) {
+                const transaction = new Transaction();
+
+                const COMPUTE_UNIT_IX = ComputeBudgetProgram.setComputeUnitLimit({
+                    units: 200000,
+                });
+
+                const PRIORITY_FEE_IX = ComputeBudgetProgram.setComputeUnitPrice({
+                    microLamports: 250000,
+                });
+
+                transaction.add(COMPUTE_UNIT_IX);
+                transaction.add(PRIORITY_FEE_IX);
+
+                const solATA = getAssociatedTokenAddressSync(
+                    new PublicKey(tokenToSend),
+                    owner.publicKey
+                );
+
+                const check = await connection.getParsedAccountInfo(solATA);
+
+                if (check.value == null) {
+                    const createAIAInstruction = createAssociatedTokenAccountInstruction(
+                        owner.publicKey,
+                        solATA,
+                        owner.publicKey,
+                        new PublicKey(tokenToSend)
+                    );
+                    transaction.add(createAIAInstruction);
+                }
+
+                const swapCpmmInstructions = makeSwapCpmmBaseInInInstruction(
+                    new PublicKey(poolKeys.programId),
+                    owner.publicKey,
+                    new PublicKey(poolKeys.authority),
+                    new PublicKey(poolKeys.config.id),
+                    new PublicKey(poolKeys.id),
+                    ata,
+                    solATA,
+                    poolKeys.mintA.address === tokenToSend
+                        ? new PublicKey(poolKeys.vault.B)
+                        : new PublicKey(poolKeys.vault.A),
+                    poolKeys.mintA.address === tokenToSend
+                        ? new PublicKey(poolKeys.vault.A)
+                        : new PublicKey(poolKeys.vault.B),
+                    poolKeys.mintA.address === tokenToSend
+                        ? new PublicKey(poolKeys.mintB.programId)
+                        : new PublicKey(poolKeys.mintA.programId),
+                    poolKeys.mintA.address === tokenToSend
+                        ? new PublicKey(poolKeys.mintA.programId)
+                        : new PublicKey(poolKeys.mintB.programId),
+                    poolKeys.mintA.address === tokenToSend
+                        ? new PublicKey(poolKeys.mintB.address)
+                        : new PublicKey(poolKeys.mintA.address),
+                    poolKeys.mintA.address === tokenToSend
+                        ? new PublicKey(poolKeys.mintA.address)
+                        : new PublicKey(poolKeys.mintB.address),
+                    rpcData.observationId,
+                    swapResult.sourceAmountSwapped,
+                    swapResult.destinationAmountSwapped
+                );
+                transaction.add(swapCpmmInstructions);
+
+                const closeAccountInstructions = createCloseAccountInstruction(
+                    solATA,
+                    owner.publicKey,
+                    owner.publicKey
+                );
+                transaction.add(closeAccountInstructions);
+
+                swap = { transaction };
+            } else {
+                swap = await raydium.cpmm.swap({
+                    poolInfo,
+                    poolKeys,
+                    swapResult,
+                    slippage: 0.005,
+                    baseIn,
+                    computeBudgetConfig: {
+                        units: 200000,
+                        microLamports: 250000,
+                    },
+                });
             }
 
-            const tokenATA = getAssociatedTokenAddressSync(
-                new PublicKey(tokenToGet),
-                owner.publicKey
-            );
-
-            const solATA = getAssociatedTokenAddressSync(
-                new PublicKey("So11111111111111111111111111111111111111112"),
-                owner.publicKey
-            );
-
-            console.log(solATA);
-
-            // const createIns = createAssociatedTokenAccountInstruction(
-            //     owner.publicKey,
-            //     solATA,
-            //     owner.publicKey,
-            //     new PublicKey("So11111111111111111111111111111111111111112")
-            // );
-
-            // const blockHash1 = await connection.getLatestBlockhash("finalized");
-
-            // const create = new Transaction();
-
-            // create.recentBlockhash = blockHash1.blockhash;
-            // create.feePayer = owner.publicKey;
-            // create.lastValidBlockHeight = blockHash1.lastValidBlockHeight;
-            // create.add(createIns);
-            // create.sign(owner);
-
-            // const txIdATA = await connection.sendTransaction(create, [owner], {
-            //     commitment: "finalized",
-            // });
-
-            // console.log(txIdATA);
-
-            // const confirmationATA = await connection.confirmTransaction(
-            //     txIdATA,
-            //     "finalized"
-            // );
-
-            // console.log(confirmationATA);
-
-            // return;
-
-            const txIns = makeSwapCpmmBaseInInInstruction(
-                new PublicKey(rpcPoolKeys.programId),
-                owner.publicKey,
-                new PublicKey(rpcPoolKeys.authority),
-                new PublicKey(rpcPoolKeys.config.id),
-                new PublicKey(rpcPoolKeys.id),
-                tokenATA,
-                solATA,
-                new PublicKey(rpcPoolKeys.vault.B),
-                new PublicKey(rpcPoolKeys.vault.A),
-                new PublicKey(rpcPoolKeys.mintB.programId),
-                new PublicKey(rpcPoolKeys.mintA.programId),
-                new PublicKey(rpcPoolKeys.mintB.address),
-                new PublicKey(rpcPoolKeys.mintA.address),
-                rpcData.observationId,
-                swapResult.sourceAmountSwapped,
-                swapResult.destinationAmountSwapped,
-            );
-
-            const revSwap = new Transaction();
-
-            const blockHash1 = await connection.getLatestBlockhash("finalized");
-
-            revSwap.recentBlockhash = blockHash1.blockhash;
-            revSwap.feePayer = owner.publicKey;
-            revSwap.lastValidBlockHeight = blockHash1.lastValidBlockHeight;
-            revSwap.add(txIns);
-            revSwap.sign(owner);
-
-            const PRIORITY_RATE = 500000; // MICRO_LAMPORTS
-
-            const PRIORITY_FEE_IX = ComputeBudgetProgram.setComputeUnitPrice({
-                microLamports: PRIORITY_RATE,
-            });
-            revSwap.add(PRIORITY_FEE_IX);
-
-            // console.log({ poolInfo, clmmPoolInfo });
-            const txIdATA = await connection.sendTransaction(revSwap, [owner], {
-                commitment: "finalized",
-            });
-
-            console.log(txIdATA);
-
-            const confirmationATA = await connection.confirmTransaction(
-                txIdATA,
-                "finalized"
-            );
-
-            console.log(confirmationATA);
-            return;
-            const swap = await raydium.cpmm.swap({
-                poolInfo: clmmPoolInfo,
-                swapResult,
-                slippage: 0.005,
-                baseIn: true,
-                computeBudgetConfig: {
-                    units: 200000,
-                    microLamports: 250000,
-                },
-            });
-
             const blockHash = await connection.getLatestBlockhash("finalized");
-            const tx = swap.transaction;
+
+            tx = swap.transaction;
 
             tx.recentBlockhash = blockHash.blockhash;
             tx.feePayer = owner.publicKey;
@@ -362,12 +319,14 @@ async function main() {
             const txId = await connection.sendTransaction(tx, [owner], {
                 skipPreflight: true,
             });
+
             console.log(txId);
 
             const confirmation = await connection.confirmTransaction(
                 txId,
-                "confirmed"
+                "finalized"
             );
+
             console.log(confirmation);
         } else console.error("No Valid Pool");
     } catch (error) {
@@ -401,10 +360,9 @@ function isValidCpmm(id) {
     return VALID_PROGRAM_ID.has(id);
 }
 
-async function createRevSwapCPMMInstruction(poolInfo, rpcData, swapResult, ) {
+async function createRevSwapCPMMInstruction(poolInfo, rpcData, swapResult) {
     try {
-
-    }catch (error) {
+    } catch (error) {
         console.log(error);
     }
 }

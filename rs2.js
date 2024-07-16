@@ -9,6 +9,7 @@ const {
     TxVersion,
     PoolUtils,
     CurveCalculator,
+    sleep,
 } = require("@raydium-io/raydium-sdk-v2");
 const BN = require("bn.js");
 const {
@@ -16,18 +17,24 @@ const {
     Keypair,
     Connection,
     LAMPORTS_PER_SOL,
+    Transaction,
 } = require("@solana/web3.js");
-const { getAssociatedTokenAddressSync } = require("@solana/spl-token");
+const {
+    getAssociatedTokenAddressSync,
+    getOrCreateAssociatedTokenAccount,
+    createAssociatedTokenAccountInstruction,
+} = require("@solana/spl-token");
 
 const connection = new Connection(
     // "http://pixel-aler168.helius-rpc.com",
-    "https://api.mainnet-beta.solana.com",
+    // "https://api.mainnet-beta.solana.com",
+    "https://winter-hardworking-county.solana-mainnet.quiknode.pro/0f1458a96f5f33e57f904d5b93de9f95aced16f4/",
     "finalized"
 );
 
 const Arry1 = JSON.parse(
     require("fs").readFileSync(
-        "/Users/tusharsahoo/Documents/GitHub/mmorbitt_yudiz/uploads/BC7fMUSWTyRqrMqZL3gVGYj8Y5myPQUBkmJEo5u83tv9.json",
+        "/Users/tusharsahoo/Documents/GitHub/mmorbitt_yudiz/uploads/mmOrbitGenerated.json",
         "utf8"
     )
 );
@@ -36,24 +43,45 @@ const owner = Keypair.fromSecretKey(secretKey1);
 
 async function main() {
     try {
-        const tokenToSend = "So11111111111111111111111111111111111111112"; // e.g. SOLANA mint address
-        // const tokenToGet = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; //
+        let bIsTokenSwap = false;
+        // while (true) {
+        const tokenToSend = "So11111111111111111111111111111111111111112"; // SOLANA mint address
+        // const tokenToGet = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"; // USDT token
+        // const tokenToGet = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; // USDC token
         // const tokenToGet = "BGyjasmSzYM9hHiZ1LBU4EJ7KCtRjMSpbN4zTru3W5vf"; // ORBT token
-        // const tokenToGet = "976AfpLCtaDqMZNoFJQHLSCVoSBSZHSW2Ra7YWvSyznM"; //
-        const tokenToGet = "3AxsZRdyYyiTdMBzjGFGxFZZsxf4Sk5kkug79t2PwooV"; // CPMM token
-        bIsTokenSwap = true;
+        const tokenToGet = "HBoNJ5v8g71s2boRivrHnfSB5MVPLDHHyVjruPfhGkvL"; // CPMM token
+        // bIsTokenSwap = !bIsTokenSwap;
+        let inputToken = tokenToSend;
 
         const ata = getAssociatedTokenAddressSync(
             new PublicKey(tokenToGet),
             owner.publicKey
         );
+        
+        // const createIx = createAssociatedTokenAccountInstruction(owner.publicKey, ata, owner.publicKey, new PublicKey(tokenToGet));
+        // const tx = new Transaction().add(createIx);
+        // const blockHash = await connection.getLatestBlockhash("finalized");
+        // tx.recentBlockhash = blockHash.blockhash;
+        // tx.feePayer = owner.publicKey;
+        // tx.lastValidBlockHeight = blockHash.lastValidBlockHeight;
+        // tx.sign(owner);
 
-        const tokenBalance = await connection.getTokenAccountBalance(ata);
+        // const txId = await connection.sendTransaction(tx, [owner], {
+        //     skipPreflight: true,
+        // });
+        // return;
 
-        // const amountToSend = 0.01 * LAMPORTS_PER_SOL; // 0.01 SOL
-        const amountToSend = tokenBalance.value.amount;
+        let amountToSend = 0.01 * LAMPORTS_PER_SOL; // 0.01 SOL
+        if (bIsTokenSwap) {
+            const tokenBalance = await connection.getTokenAccountBalance(ata);
+            console.log(tokenBalance);
+            amountToSend = tokenBalance.value.amount;
+            inputToken = tokenToGet;
+        }
 
-        const raydium = await initRaydium();
+        let raydium = await initRaydium();
+
+        raydium.setOwner(owner);
 
         const list = await raydium.api.fetchPoolByMints({
             mint1: tokenToGet, // required
@@ -69,56 +97,58 @@ async function main() {
         const data = await raydium.api.fetchPoolById({ ids: poolId });
 
         const poolInfo = data[0];
-        // console.log(poolInfo);
 
         if (isValidAmm(poolInfo.programId)) {
             console.log("AMM Pool");
             const poolKeys = await raydium.liquidity.getAmmPoolKeys(poolId);
+            const rpcData = await raydium.liquidity.getRpcPoolInfo(poolId);
             // console.log(poolKeys);
 
-            const res = await fetchMultipleInfo({
-                connection: raydium.connection,
-                poolKeysList: [poolKeys],
-                config: undefined,
-            });
-            const pool = res[0];
+            // const res = await fetchMultipleInfo({
+            //     connection: raydium.connection,
+            //     poolKeysList: [poolKeys],
+            //     config: undefined,
+            // });
+            // const pool = res[0];
+            const [baseReserve, quoteReserve, status] = [
+                rpcData.baseReserve,
+                rpcData.quoteReserve,
+                rpcData.status.toNumber(),
+            ];
 
-            const mintIn =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? poolInfo.mintB.address
-                    : poolInfo.mintA.address;
-
-            const mintOut =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? poolInfo.mintA.address
-                    : poolInfo.mintB.address;
+            const baseIn = inputToken === poolInfo.mintA.address.toString();
+            const [mintIn, mintOut] = baseIn
+                ? [poolInfo.mintA, poolInfo.mintB]
+                : [poolInfo.mintB, poolInfo.mintA];
 
             const out = raydium.liquidity.computeAmountOut({
                 poolInfo: {
                     ...poolInfo,
-                    baseReserve: pool.baseReserve,
-                    quoteReserve: pool.quoteReserve,
+                    baseReserve,
+                    quoteReserve,
+                    status,
+                    version: 4,
                 },
                 amountIn: new BN(amountToSend),
-                mintIn: mintIn, // swap mintB -> mintA, use: poolInfo.mintB.address
-                mintOut: mintOut, // swap mintB -> mintA, use: poolInfo.mintA.address
+                mintIn: mintIn.address,
+                mintOut: mintOut.address,
                 slippage: 0.005, // range: 1 ~ 0.0001, means 100% ~ 0.01%
             });
 
             const swap = await raydium.liquidity.swap({
                 poolInfo,
+                poolKeys,
                 amountIn: new BN(amountToSend),
                 amountOut: out.minAmountOut, // out.amountOut means amount 'without' slippage
                 fixedSide: "in",
-                inputMint: mintIn, // swap mintB -> mintA, use: poolInfo.mintB.address
-                associatedOnly: false,
+                inputMint: mintIn.address, // swap mintB -> mintA, use: poolInfo.mintB.address
                 txVersion: TxVersion.LEGACY,
+                config: { associatedOnly: false },
                 computeBudgetConfig: {
                     units: 200000,
                     microLamports: 250000,
                 },
             });
-            console.log(swap.transaction);
 
             const blockHash = await connection.getLatestBlockhash("finalized");
             const tx = swap.transaction;
@@ -189,41 +219,50 @@ async function main() {
         } else if (isValidCpmm(poolInfo.programId)) {
             console.log("CPMM Pool");
 
+            const poolKeys = await raydium.cpmm.getCpmmPoolKeys(poolInfo.id);
             const rpcData = await raydium.cpmm.getRpcPoolInfo(poolInfo.id, true);
-
-            // console.log(rpcData);
 
             const inputAmount = new BN(amountToSend);
 
-            const reserveA =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? rpcData.quoteReserve
-                    : rpcData.baseReserve;
+            const baseIn = inputToken === poolInfo.mintA.address.toString();
 
-            const reserveB =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? rpcData.baseReserve
-                    : rpcData.quoteReserve;
+            // const reserveA =
+            //     (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
+            //         ? rpcData.quoteReserve
+            //         : rpcData.baseReserve;
 
-            const baseIn =
-                (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
-                    ? false
-                    : true;
+            // const reserveB =
+            //     (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
+            //         ? rpcData.baseReserve
+            //         : rpcData.quoteReserve;
+
+            // const baseIn =
+            //     (poolInfo.mintA.address.toString() === tokenToSend) === bIsTokenSwap
+            //         ? false
+            //         : true;
 
             console.log(baseIn);
 
+            // const swapResult = CurveCalculator.swap(
+            //     inputAmount,
+            //     reserveA,
+            //     reserveB,
+            //     rpcData.configInfo.tradeFeeRate
+            // );
+
             const swapResult = CurveCalculator.swap(
                 inputAmount,
-                reserveA,
-                reserveB,
+                baseIn ? rpcData.baseReserve : rpcData.quoteReserve,
+                baseIn ? rpcData.quoteReserve : rpcData.baseReserve,
                 rpcData.configInfo.tradeFeeRate
             );
 
             const swap = await raydium.cpmm.swap({
                 poolInfo,
+                poolKeys,
                 swapResult,
                 slippage: 0.005,
-                baseIn: baseIn,
+                baseIn,
                 computeBudgetConfig: {
                     units: 200000,
                     microLamports: 250000,
@@ -249,6 +288,8 @@ async function main() {
             );
             console.log(confirmation);
         } else console.error("No Valid Pool");
+        // await new Promise((resolve) => setTimeout(resolve, 5000));
+        // }
     } catch (error) {
         console.log(error);
     }
@@ -257,10 +298,11 @@ async function main() {
 async function initRaydium(loadToken = false) {
     const raydium = await Raydium.load({
         connection,
-        owner,
+        // owner,
         cluster: "mainnet",
         disableFeatureCheck: true,
         disableLoadToken: loadToken,
+        blockhashCommitment: "finalized",
     });
     return raydium;
 }
